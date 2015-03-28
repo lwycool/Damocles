@@ -1,0 +1,142 @@
+INTRODUCTION
+============
+
+DAMOCLES is an acronym for "Defense Against Malicious Opponents of Cloud Enterprise Security".
+
+Damocles is intended to be built as a framework to allow introspection, analysis, detection and application of remedial action
+to malicious network traffic. It is intended to be designed to be agnostic of the underlying Infrastructure that provides
+the network interfaces that Damocles monitors. Thus, it should be easily and identically deployable in a physical environment
+as it can be on a virtualized environment or a cloud based IaaS.
+
+Damocles is intended to support multiple protocols like HTTP/HTTPS/TCP/ICMP.
+
+ARCHITECTURE
+============
+
+The architecture of Damocles is loosely reminiscent of Open vSwitch's architecture, in that
+the components follow a similar flow pattern. HOWEVER, an important difference is that OVS
+and Damocles are basically at opposite ends of the spectrum in what they seek to do - OVS
+seeks to allow as much as possible, efficiently, while Damocles seeks to completely stop
+malicious traffic, efficiently. This gives rise to major differences in the operations,
+and we will detail this below in the "FLOW OF OPERATIONS" section.
+
+There are two main entities in this framework:
+
+1. Damocles Agent
+2. Damocles Controller
+
+The Damocles Agent runs on every host in the cloud deployment. It can be configured to talk
+to multiple Damocles Controllers. The Controller acts as a management/REST API/central
+configuration console to configure multiple Damocles Agents.
+
+The Damocles Agent can also be configured to send over data for realtime or offline analysis,
+or to reporting tools like Zabbix, via the Damocles Controller.
+
+The Damocles Controller should be deployable in a multiple controller configuration for HA.
+
+Other frameworks should be able to plug into the Damocles Controller. Exmples of such
+would be a realtime cloud traffic analyzer seeking to push new ACLs or rules to swathes of
+Damocles Agents via the Controller.
+
+
+
+DAMOCLES AGENT
+===================
+
+The following components make up the Damocles Agent on a given host:
+
+1. Interceptor
+--------------
+    This module intercepts all incoming network traffic on an interface.
+
+2. ProtocolExtractor
+--------------
+    This module extracts SDUs of a specified protocol from the incoming network traffic.
+
+3. ProtocolAnalyzer
+--------------
+    This module detects whether the fields in the headers of an SDU are malicious or not.
+
+4. MetaCache
+--------------
+    This serves as a cache of protocol metadata that has most recently been identified and/or
+    referred to as malicious. This module is intended to speed up lookups of currently active
+    attackers. This supports storing metadata of multiple protocols, currently, http and https.
+    The MetaCache also stores a set of ACLs that can be used to specify actions like DROP,
+    MIRROR, etc, on packets matching certain conditions. 
+    Entries in the MetaCache will be deleted periodically by a timer. The period is configurable.
+    See 6.
+
+5. RateLimiter
+-------------
+    Primarily intended for HTTP URLs, this component is required to rate limit DoS attacks
+    that use non-malicious valid URLs, but in huge numbers, in order to overwhelm the HTTP service.
+
+6. MetaTimer
+--------------
+    It would be most efficient to only keep hot entries in the MetaCache. The MetaTimer will
+    remove all malicious URLs (or other protocol entries) that have not been encountered in a
+    configurable interval of time.
+
+7. MetaDB 
+--------------
+    This serves as a secondary store of protocol metadata that has been identified to be
+    malicious. In a simple reference implementation, this can be a simple text file.
+    This also is intended to be used to store ACLs to specify actions against the metadata.
+
+8. MetaDBd
+--------------
+    This is a daemon (or component) that can talk to the MetaDB database.
+
+
+DAMOCLES CONTROLLER
+===================
+
+The Damocles Controller will be detailed in further versions of this document.
+
+
+FLOW OF OPERATIONS
+==================
+
+
+A typical flow of operations is detailed below for malicious HTTP URL detection:
+
+
+1. The MetaDB is pre-seeded with a list of previously identified malicious HTTP URLs.
+   This is expected to be done by the Damocles Controller when this Damocles Agent
+   is added to the Controller when it is first set up.
+
+2. The MetaCache is initially empty when the Damocles agent starts up. The HTTPMetaCache
+   will arrange its cache as a two level hierarchy of a bucketed hashset where the
+   protocol://fqdn:<port> (if no port is specified, we will append the default port of 80)
+   will be the key of the bucket, and the bucket is a trie of all malicious URLs.
+
+3. The Interceptor intercepts a network stream and uses the ProtocolExtractor to extract
+   HTTP packet+headers.
+
+4. The Interceptor invokes the ProtocolAnalyzer on the HTTP header. The analyzer first
+   refers to the MetaCache to see if the HTTP URL is already identified and cached as
+   malicious. If a cache miss occurs, it will refer to the MetaDBdaemon to check if
+   there are any entries for this fqdn. If so, it will load them all into the MetaCache.
+   If there are no malicious entries for this fqdn, it will still create an entry for it
+   in the MetaCache, with an empty bucket. THIS IS IMPORTANT - Why do we do this? Won't
+   it expand the MetaCache entries? No, for two reasons - first, we won't get any URLs
+   with a domain name that our host is not serving - at the max, say we run a 1000 servers
+   on our host, we'll end up with 1000 hashset entries for 1000 fqdns - not costly.
+   Second, we time out these entries after a period of inactivity. They'll eventually
+   get cleared out of the MetaCache anyway.
+ 
+5. The Analyzer now checks against the MetaCache if the incoming URL is malicious. If so,
+   it takes the action as per the ACL configuration for this HTTP header. If not, it puts
+   the packet back to the interception stream. 
+
+
+
+The flow stays similar for all protocols, except for differences in the way the MetaCache
+is implemented for each protocol.
+
+
+IMPORTANT PS
+============
+(If it comes to it, before disclosing the acro of Damocles to a customer, check if she/he
+laaves/HATES those beaten to death Marvel movies, lest thoughts of S.H.I.E.L.D arise..)
